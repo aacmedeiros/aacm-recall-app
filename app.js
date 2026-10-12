@@ -285,6 +285,41 @@ async function saveIndex() {
   state.indexSha = await ghPutFileFresh("index.json", text, "Atualiza index.json");
 }
 
+async function ghDeleteFile(path, sha, message) {
+  const res = await ghRequest(path, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, sha, branch: GH_BRANCH }),
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(`Falha ao excluir ${path} no GitHub: ${errBody.message || res.status}`);
+  }
+}
+
+// Exclui o card de vez: apaga cards/<slug>.md no GitHub (se houver token)
+// e tira do index.json, alem de limpar qualquer rascunho/cache local.
+async function deleteCard(slug) {
+  const idx = state.index.findIndex((c) => c.slug === slug);
+  if (idx === -1) return;
+  const card = state.index[idx];
+
+  if (getGhToken()) {
+    const file = await ghGetFile(`cards/${slug}.md`);
+    if (file) await ghDeleteFile(`cards/${slug}.md`, file.sha, `Exclui: ${card.title}`);
+    state.index.splice(idx, 1);
+    await saveIndex();
+  } else {
+    state.index.splice(idx, 1);
+  }
+
+  delete state.overrides[slug];
+  saveJSON("aacm-overrides", state.overrides);
+  delete state.bodyCache[slug];
+  delete state.cardShas[slug];
+  state.termIndexCache = null;
+}
+
 async function loadCardBody(slug) {
   if (state.bodyCache[slug]) return state.bodyCache[slug];
 
@@ -713,6 +748,7 @@ async function renderCardDetail(slug) {
       <div class="tab-panel" data-panel="notebook">
         <div class="panel-toolbar">
           <button class="btn-ghost" id="editBtn">${ICONS.pencil} Editar</button>
+          <button class="btn-ghost btn-danger" id="deleteCardBtn">${ICONS.trash} Excluir</button>
           <span id="savedHint" class="saved-hint"></span>
         </div>
         <div id="prose" class="prose">${renderMarkdown(effectiveContent || "_Sem conteudo ainda._", titleToSlug)}</div>
@@ -831,6 +867,21 @@ function wireCardDetailEvents(slug, card, effectiveCard) {
         initAskPanel(slug, card);
       }
     });
+  });
+
+  const deleteCardBtn = content.querySelector("#deleteCardBtn");
+  deleteCardBtn.addEventListener("click", async () => {
+    if (!confirm(`Excluir definitivamente o card "${card.title}"?\n\nIsso remove o arquivo do GitHub tambem — nao da pra desfazer.`)) return;
+    deleteCardBtn.disabled = true;
+    deleteCardBtn.innerHTML = "Excluindo…";
+    try {
+      await deleteCard(slug);
+      navigate({ view: "home" });
+    } catch (err) {
+      alert("Nao consegui excluir: " + err.message);
+      deleteCardBtn.disabled = false;
+      deleteCardBtn.innerHTML = `${ICONS.trash} Excluir`;
+    }
   });
 
   // ---- editar conteudo ----

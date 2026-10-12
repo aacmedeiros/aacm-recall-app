@@ -421,13 +421,16 @@ a.wikilink { cursor: pointer; }
    o conteudo abaixo e o navegador "pulava" o scroll pra acompanhar. */
 .saved-hint {
   position: absolute;
-  left: 110px;
+  left: 220px;
   top: 50%;
   transform: translateY(-50%);
   color: #7fd17f;
   font-size: 12.5px;
-  max-width: calc(100% - 110px);
+  max-width: calc(100% - 220px);
 }
+
+.btn-danger { color: #e77; border-color: #5a2e2e; }
+.btn-danger:hover { color: #ff8a8a; border-color: #8a3a3a; }
 
 .edit-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .edit-toolbar .spacer { flex: 1; }
