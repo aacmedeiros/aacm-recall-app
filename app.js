@@ -847,11 +847,13 @@ function wireCardDetailEvents(slug, card, effectiveCard) {
   function wrapSelection(before, after) {
     const start = textarea.selectionStart, end = textarea.selectionEnd;
     const val = textarea.value;
+    const scrollPos = textarea.scrollTop; // reatribuir .value reseta o scroll do campo
     const selected = val.slice(start, end) || "texto";
     textarea.value = val.slice(0, start) + before + selected + after + val.slice(end);
     textarea.focus();
     textarea.selectionStart = start + before.length;
     textarea.selectionEnd = start + before.length + selected.length;
+    textarea.scrollTop = scrollPos;
   }
   content.querySelector("#boldBtn").addEventListener("click", () => wrapSelection("**", "**"));
   content.querySelector("#highlightBtn").addEventListener("click", () => wrapSelection("==", "=="));
