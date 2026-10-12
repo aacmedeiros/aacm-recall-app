@@ -219,8 +219,14 @@ async function ghPutFile(path, text, message, sha) {
     }),
   });
   if (res.status === 409 || res.status === 422) {
-    const err = new Error("sha-conflict");
-    err.isShaConflict = true;
+    const errBody = await res.json().catch(() => ({}));
+    const rawMsg = errBody.message || `status ${res.status}`;
+    // So e um conflito de versao de verdade se o GitHub falar de "sha" na
+    // mensagem — um 422 tambem pode ser outro problema (ex.: codificacao,
+    // branch invalido), e nesses casos repetir a gravacao so vai falhar
+    // igual 3x e esconder o motivo real.
+    const err = new Error(rawMsg);
+    err.isShaConflict = /sha/i.test(rawMsg);
     throw err;
   }
   if (!res.ok) {
@@ -231,20 +237,24 @@ async function ghPutFile(path, text, message, sha) {
   return data.content.sha;
 }
 
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
 // Grava sempre buscando o sha mais recente na hora (em vez de confiar num
 // sha guardado em memoria, que pode estar desatualizado — por exemplo se
 // outro aparelho gravou antes, ou se uma tentativa anterior deu erro no
 // meio do caminho). Se mesmo assim bater um conflito de versao (dois
-// gravamentos quase simultaneos), tenta mais uma vez.
+// gravamentos quase simultaneos, ou a API do GitHub demorando a propagar
+// o commit anterior), espera um pouco e tenta de novo, ate 5 vezes.
 async function ghPutFileFresh(path, text, message, attempt = 1) {
   const current = await ghGetFile(path);
   try {
     return await ghPutFile(path, text, message, current ? current.sha : undefined);
   } catch (err) {
-    if (err.isShaConflict && attempt < 3) {
+    if (err.isShaConflict && attempt < 5) {
+      await sleep(400 * attempt);
       return ghPutFileFresh(path, text, message, attempt + 1);
     }
-    throw err;
+    throw new Error(`Conflito ao gravar ${path} no GitHub (${err.message}).`);
   }
 }
 
@@ -941,11 +951,9 @@ function wireCardDetailEvents(slug, card, effectiveCard) {
   });
   const addTagBtn = content.querySelector("#addTagBtn");
   if (addTagBtn) {
-    addTagBtn.addEventListener("click", () => {
-      const known = allKnownTags();
-      const choice = prompt("Nome da tag para adicionar (existentes: " + known.join(", ") + "):");
-      if (!choice || !choice.trim()) return;
-      applyTagChange([...new Set([...getEffectiveTags(card), choice.trim()])]);
+    addTagBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleTagPickerDropdown(addTagBtn, card, applyTagChange);
     });
   }
 }
@@ -1104,6 +1112,75 @@ function closeDropdowns() {
 
 // Painel de filtro em "gaveta": uma tela principal (Date / Source / Tags)
 // e cada uma abre a sua propria tela, com busca — igual ao Recall.
+// Dropdown pra adicionar tag a um card: lista as tags que ja existem na
+// base (igual ao Recall) com busca, em vez de pedir pra digitar o nome
+// de cabeca. No fim da lista da pra criar uma tag nova.
+function toggleTagPickerDropdown(anchorEl, card, onApply) {
+  if (document.querySelector(".dropdown-panel[data-kind='tag-pick']")) { closeDropdowns(); return; }
+  closeDropdowns();
+
+  const panel = document.createElement("div");
+  panel.className = "dropdown-panel dropdown-panel-filter";
+  panel.dataset.kind = "tag-pick";
+  positionDropdown(panel, anchorEl);
+  document.body.appendChild(panel);
+
+  const current = new Set(getEffectiveTags(card));
+  const available = allKnownTags().filter((t) => !current.has(t));
+
+  const renderList = (query) => {
+    const q = (query || "").toLowerCase();
+    const filtered = available.filter((t) => t.toLowerCase().includes(q));
+    return filtered
+      .map(
+        (t) => `<div class="dropdown-check tag-pick-row" data-tag="${escapeHtml(t)}" style="cursor:pointer;">
+          <span class="dropdown-check-label">${escapeHtml(t)}</span>
+        </div>`
+      )
+      .join("") || `<div class="hint" style="padding:10px 0;">Nenhuma tag encontrada</div>`;
+  };
+
+  panel.innerHTML = `
+    <div class="filter-sub-header">Adicionar tag</div>
+    <div class="filter-search"><input type="text" id="tagPickSearch" placeholder="Buscar ou criar tag..." autofocus /></div>
+    <div class="dropdown-list filter-sub-list" id="tagPickList">${renderList("")}</div>
+    <div class="dropdown-section">
+      <button class="btn-ghost" id="tagPickCreate" style="width:100%;text-align:left;">+ Criar e adicionar nova tag</button>
+    </div>
+  `;
+
+  function wireRows() {
+    panel.querySelectorAll(".tag-pick-row").forEach((row) => {
+      row.addEventListener("click", () => {
+        onApply([...new Set([...getEffectiveTags(card), row.dataset.tag])]);
+        closeDropdowns();
+      });
+    });
+  }
+  wireRows();
+
+  const searchInput = panel.querySelector("#tagPickSearch");
+  searchInput.addEventListener("input", (e) => {
+    panel.querySelector("#tagPickList").innerHTML = renderList(e.target.value);
+    wireRows();
+  });
+
+  function createFromSearch() {
+    const name = searchInput.value.trim();
+    if (!name) return;
+    if (!state.customTags.includes(name)) {
+      state.customTags.push(name);
+      saveJSON("aacm-custom-tags", state.customTags);
+    }
+    onApply([...new Set([...getEffectiveTags(card), name])]);
+    closeDropdowns();
+  }
+  panel.querySelector("#tagPickCreate").addEventListener("click", createFromSearch);
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") createFromSearch();
+  });
+}
+
 function toggleFilterDropdown(anchorEl) {
   if (document.querySelector(".dropdown-panel[data-kind='filter']")) { closeDropdowns(); return; }
   closeDropdowns();
@@ -1278,7 +1355,7 @@ function positionDropdown(panel, anchorEl) {
 }
 
 document.addEventListener("click", (e) => {
-  if (e.target.closest(".dropdown-panel") || e.target.closest("#filterBtn") || e.target.closest("#sortBtn")) return;
+  if (e.target.closest(".dropdown-panel") || e.target.closest("#filterBtn") || e.target.closest("#sortBtn") || e.target.closest("#addTagBtn")) return;
   closeDropdowns();
 });
 
