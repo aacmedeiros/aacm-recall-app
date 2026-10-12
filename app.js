@@ -218,12 +218,34 @@ async function ghPutFile(path, text, message, sha) {
       ...(sha ? { sha } : {}),
     }),
   });
+  if (res.status === 409 || res.status === 422) {
+    const err = new Error("sha-conflict");
+    err.isShaConflict = true;
+    throw err;
+  }
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
     throw new Error(`Falha ao gravar ${path} no GitHub: ${errBody.message || res.status}`);
   }
   const data = await res.json();
   return data.content.sha;
+}
+
+// Grava sempre buscando o sha mais recente na hora (em vez de confiar num
+// sha guardado em memoria, que pode estar desatualizado — por exemplo se
+// outro aparelho gravou antes, ou se uma tentativa anterior deu erro no
+// meio do caminho). Se mesmo assim bater um conflito de versao (dois
+// gravamentos quase simultaneos), tenta mais uma vez.
+async function ghPutFileFresh(path, text, message, attempt = 1) {
+  const current = await ghGetFile(path);
+  try {
+    return await ghPutFile(path, text, message, current ? current.sha : undefined);
+  } catch (err) {
+    if (err.isShaConflict && attempt < 3) {
+      return ghPutFileFresh(path, text, message, attempt + 1);
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -245,7 +267,7 @@ async function loadIndex() {
 
 async function saveIndex() {
   const text = JSON.stringify(state.index, null, 2);
-  state.indexSha = await ghPutFile("index.json", text, "Atualiza index.json", state.indexSha);
+  state.indexSha = await ghPutFileFresh("index.json", text, "Atualiza index.json");
 }
 
 async function loadCardBody(slug) {
@@ -298,7 +320,7 @@ async function saveCardToGitHub(slug, content) {
     "",
   ].join("\n");
 
-  const newSha = await ghPutFile(`cards/${slug}.md`, fm, `Editar: ${card.title}`, state.cardShas[slug]);
+  const newSha = await ghPutFileFresh(`cards/${slug}.md`, fm, `Editar: ${card.title}`);
   state.cardShas[slug] = newSha;
   state.bodyCache[slug] = parseCardFile(fm);
   await saveIndex();
