@@ -1451,7 +1451,28 @@ async function main() {
     history.replaceState(null, "", location.pathname);
   }
 
+  await resetStaleServiceWorkerOnce();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+
+// Faz uma faxina ÚNICA (uma vez por aparelho) em qualquer service worker e
+// cache antigos — resolve o caso de uma versao anterior do app ter ficado
+// "presa" servindo codigo desatualizado, mesmo depois de publicar correcoes.
+// So roda de novo se eu mudar o numero da versao abaixo.
+const SW_RESET_VERSION = "2";
+async function resetStaleServiceWorkerOnce() {
+  if (localStorage.getItem("aacm-sw-reset") === SW_RESET_VERSION) return;
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch (e) { console.warn("Faxina de service worker falhou:", e); }
+  localStorage.setItem("aacm-sw-reset", SW_RESET_VERSION);
 }
 
 main().catch((err) => {
