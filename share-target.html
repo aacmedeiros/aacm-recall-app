@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Salvar no AACM Recall</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!--
+    Esta pagina e o "destino" registrado em manifest.json -> share_target.
+    Quando voce toca em [Compartilhar] -> [AACM Recall] em qualquer app do
+    Android, o sistema abre ESTA pagina com o link (ou texto) na URL, tipo:
+      share-target.html?title=...&text=...&url=https://...
+    Ela separa o link do texto, mostra a mesma tela de "Salvar" do app
+    principal e redireciona para a Home depois.
+  -->
+  <div id="modalRoot"></div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const rawUrl = params.get("url") || "";
+    const rawText = params.get("text") || "";
+    const rawTitle = params.get("title") || "";
+    // Alguns apps (ex.: Instagram, X) mandam o link dentro de "text" em vez de "url"
+    const urlFromText = (rawText.match(/https?:\/\/\S+/) || [])[0];
+    const finalUrl = rawUrl || urlFromText || "";
+
+    document.getElementById("modalRoot").innerHTML = `
+      <div class="modal-backdrop">
+        <div class="modal">
+          <h3>➕ Salvar no AACM Recall</h3>
+          <input id="mUrl" value="${finalUrl}" />
+          <input id="mTitle" placeholder="Titulo" value="${rawTitle}" />
+          <div class="modal-actions">
+            <button class="btn-add" id="mGo">Continuar</button>
+          </div>
+        </div>
+      </div>`;
+
+    document.getElementById("mGo").addEventListener("click", () => {
+      const q = new URLSearchParams({ url: document.getElementById("mUrl").value, title: document.getElementById("mTitle").value });
+      location.href = `index.html?prefill=1&${q.toString()}#add`;
+    });
+  </script>
+</body>
+</html>
