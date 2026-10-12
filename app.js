@@ -1,18 +1,24 @@
 /* AACM Recall — app principal
  *
- * Camada de dados hoje: le data/index.json e data/cards/*.md por fetch()
- * relativo, servidos localmente. Na Sessao 2 isso sera trocado por
- * chamadas ao GitHub API (ler e GRAVAR), mas as funcoes de dados abaixo
- * sao a fronteira que muda — o resto do app (render, busca, tags, modal)
- * continua igual.
+ * Camada de dados: le e grava direto no repositorio PRIVADO do GitHub
+ * (aacmedeiros/aacm-recall-data) via GitHub Contents API, usando um
+ * token de acesso pessoal que fica so no localStorage deste navegador
+ * (nunca no codigo do app, que e publico). Sem token, cai num modo
+ * local de teste (data/index.json ao lado do app) — so usado em
+ * desenvolvimento.
  *
- * "Overrides" locais: ate a Sessao 2 ligar o GitHub, edicoes de conteudo,
- * tags e notas ficam so no localStorage deste navegador (rascunho). Nada
- * se perde — na Sessao 2 esses rascunhos viram commits de verdade.
+ * "Overrides" locais: toda edicao atualiza o localStorage na hora
+ * (resposta instantanea, funciona offline) e o commit de verdade pro
+ * GitHub acontece quando voce termina de editar (fecha o editor) —
+ * assim nao cria um commit a cada letra digitada.
  */
 
-const DATA_BASE = "../data";
+const DATA_BASE = "../data"; // usado so no modo local de teste (sem token)
 const GEMINI_MODEL = "gemini-2.5-flash"; // trocar aqui se o nome do modelo mudar
+
+const GH_OWNER = "aacmedeiros";
+const GH_REPO = "aacm-recall-data";
+const GH_BRANCH = "master";
 
 const state = {
   index: [],
@@ -20,6 +26,8 @@ const state = {
   query: "",
   route: { view: "home" },
   bodyCache: {},
+  indexSha: null,
+  cardShas: {},
   customTags: loadJSON("aacm-custom-tags", []),
   overrides: loadJSON("aacm-overrides", {}), // slug -> { tags?: [...], content?: "..." }
   filters: { tags: new Set(), sources: new Set(), dateFrom: "", dateTo: "" },
@@ -72,6 +80,25 @@ function setCardContent(slug, content) {
   state.overrides[slug] = { ...(state.overrides[slug] || {}), content };
   saveJSON("aacm-overrides", state.overrides);
   state.termIndexCache = null; // o [[termo]] pode ter mudado, recalcula na proxima vez
+}
+
+// Envia o estado atual (tags + conteudo efetivos) do card para o GitHub.
+// So faz algo se houver token configurado; sem token, fica so no
+// localStorage (modo local de teste). Em caso de sucesso, limpa o
+// "rascunho" local porque o GitHub ja passa a ser a fonte da verdade.
+async function syncCardToGitHub(slug) {
+  if (!getGhToken()) return { skipped: true };
+  const card = state.index.find((c) => c.slug === slug);
+  if (!card) return { skipped: true };
+
+  const body = state.bodyCache[slug] || (await loadCardBody(slug));
+  const content = getEffectiveContent(card, body);
+  card.tags = getEffectiveTags(card);
+
+  await saveCardToGitHub(slug, content);
+  delete state.overrides[slug];
+  saveJSON("aacm-overrides", state.overrides);
+  return { skipped: false };
 }
 
 // ---------------------------------------------------------------------
@@ -132,20 +159,141 @@ function allKnownTags() {
 // Camada de dados (fronteira que sera trocada pelo GitHub API depois)
 // ---------------------------------------------------------------------
 
+// ---------------------------------------------------------------------
+// GitHub Contents API — ler e gravar arquivos no repositorio privado
+// ---------------------------------------------------------------------
+
+function getGhToken() { return localStorage.getItem("aacm-gh-token") || ""; }
+function setGhToken(t) { localStorage.setItem("aacm-gh-token", t.trim()); }
+function clearGhToken() { localStorage.removeItem("aacm-gh-token"); }
+
+// base64 seguro pra UTF-8 (acentos, emoji nas tags, etc.)
+function utf8ToBase64(str) {
+  return btoa(String.fromCharCode(...new TextEncoder().encode(str)));
+}
+function base64ToUtf8(b64) {
+  return new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+}
+
+async function ghRequest(path, options = {}) {
+  const token = getGhToken();
+  const res = await fetch(`https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      ...(options.headers || {}),
+    },
+  });
+  return res;
+}
+
+// Le um arquivo do repo. Retorna {text, sha} ou null se nao existir (404).
+async function ghGetFile(path) {
+  const res = await ghRequest(`${path}?ref=${GH_BRANCH}`);
+  if (res.status === 404) return null;
+  if (res.status === 401) throw new Error("Token do GitHub invalido ou expirado.");
+  if (!res.ok) throw new Error(`GitHub respondeu ${res.status} ao ler ${path}`);
+  const data = await res.json();
+  return { text: base64ToUtf8(data.content.replace(/\n/g, "")), sha: data.sha };
+}
+
+// Cria ou atualiza um arquivo (precisa do sha atual se o arquivo ja existe).
+async function ghPutFile(path, text, message, sha) {
+  const res = await ghRequest(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      content: utf8ToBase64(text),
+      branch: GH_BRANCH,
+      ...(sha ? { sha } : {}),
+    }),
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(`Falha ao gravar ${path} no GitHub: ${errBody.message || res.status}`);
+  }
+  const data = await res.json();
+  return data.content.sha;
+}
+
+// ---------------------------------------------------------------------
+// Dados: index.json e cards/*.md — via GitHub se houver token, senao
+// cai no modo local de teste (fetch relativo, so em desenvolvimento).
+// ---------------------------------------------------------------------
+
 async function loadIndex() {
+  if (getGhToken()) {
+    const file = await ghGetFile("index.json");
+    if (!file) throw new Error("index.json nao encontrado no repositorio aacm-recall-data.");
+    state.indexSha = file.sha;
+    return JSON.parse(file.text);
+  }
   const res = await fetch(`${DATA_BASE}/index.json`);
-  if (!res.ok) throw new Error("Nao consegui carregar data/index.json");
+  if (!res.ok) throw new Error("Nao consegui carregar data/index.json (modo local)");
   return res.json();
+}
+
+async function saveIndex() {
+  const text = JSON.stringify(state.index, null, 2);
+  state.indexSha = await ghPutFile("index.json", text, "Atualiza index.json", state.indexSha);
 }
 
 async function loadCardBody(slug) {
   if (state.bodyCache[slug]) return state.bodyCache[slug];
-  const res = await fetch(`${DATA_BASE}/cards/${slug}.md`);
-  if (!res.ok) throw new Error(`Nao consegui carregar o card ${slug}`);
-  const raw = await res.text();
+
+  let raw;
+  if (getGhToken()) {
+    const file = await ghGetFile(`cards/${slug}.md`);
+    if (!file) throw new Error(`Card ${slug} nao encontrado no GitHub.`);
+    state.cardShas[slug] = file.sha;
+    raw = file.text;
+  } else {
+    const res = await fetch(`${DATA_BASE}/cards/${slug}.md`);
+    if (!res.ok) throw new Error(`Nao consegui carregar o card ${slug}`);
+    raw = await res.text();
+  }
+
   const parsed = parseCardFile(raw);
   state.bodyCache[slug] = parsed;
   return parsed;
+}
+
+// Grava o card de volta no GitHub, reconstruindo o arquivo inteiro
+// (frontmatter + conteudo). So entra em acao quando ha token configurado.
+async function saveCardToGitHub(slug, content) {
+  const card = state.index.find((c) => c.slug === slug);
+  if (!card) throw new Error("Card nao encontrado no indice.");
+
+  card.updated = new Date().toISOString();
+  card.bracket_terms = extractBracketTerms(content);
+  state.termIndexCache = null;
+
+  const fm = [
+    "---",
+    `title: "${(card.title || "").replace(/"/g, '\\"')}"`,
+    `url: "${card.url || ""}"`,
+    `source: "${card.source || ""}"`,
+    "tags:",
+    ...(card.tags.length ? card.tags.map((t) => `  - "${t}"`) : []),
+    `thumbnail: "${card.thumbnail || ""}"`,
+    "attachments:",
+    ...(card.attachments || []).map((a) => `  - "${a}"`),
+    `created: "${card.created || ""}"`,
+    `updated: "${card.updated}"`,
+    `status: "${card.status || "resumido"}"`,
+    "---",
+    "",
+    "## Content",
+    content.trim(),
+    "",
+  ].join("\n");
+
+  const newSha = await ghPutFile(`cards/${slug}.md`, fm, `Editar: ${card.title}`, state.cardShas[slug]);
+  state.cardShas[slug] = newSha;
+  state.bodyCache[slug] = parseCardFile(fm);
+  await saveIndex();
 }
 
 function parseCardFile(raw) {
@@ -154,6 +302,11 @@ function parseCardFile(raw) {
     const end = raw.indexOf("\n---", 3);
     if (end !== -1) body = raw.slice(end + 4).replace(/^\n+/, "");
   }
+  const contentIdx = body.indexOf("## Content");
+  if (contentIdx !== -1) {
+    return { summaryMd: body.slice(contentIdx + "## Content".length).trim(), notesMd: "" };
+  }
+
   const summaryIdx = body.indexOf("## Summary");
   const notesIdx = body.indexOf("## My notes");
 
@@ -687,25 +840,46 @@ function wireCardDetailEvents(slug, card, effectiveCard) {
     }, 600);
   });
 
-  function closeEditor() {
+  async function closeEditor() {
     clearTimeout(autosaveTimer);
     setCardContent(slug, textarea.value); // garante que a ultima letra digitada tambem foi salva
     const titleToSlug = new Map(state.index.map((c) => [c.title.toLowerCase(), c.slug]));
     prose.innerHTML = renderMarkdown(textarea.value, titleToSlug);
     editWrap.style.display = "none"; prose.style.display = ""; editBtn.style.display = "";
     wireWikilinkPreviews(prose, slug);
+
+    if (getGhToken()) {
+      savedHint.textContent = "☁️ Sincronizando com o GitHub…";
+      try {
+        await syncCardToGitHub(slug);
+        savedHint.textContent = "☁️ Sincronizado com o GitHub";
+        setTimeout(() => (savedHint.textContent = ""), 3000);
+      } catch (err) {
+        savedHint.textContent = "⚠️ Nao sincronizou (ficou salvo so neste navegador): " + err.message;
+      }
+    } else {
+      savedHint.textContent = "✅ Salvo neste navegador (sem GitHub conectado)";
+      setTimeout(() => (savedHint.textContent = ""), 3000);
+    }
   }
 
   // ---- tags: editar/excluir (hover) + adicionar ----
+  async function applyTagChange(tags) {
+    setCardTags(slug, tags);
+    render();
+    if (getGhToken()) {
+      try { await syncCardToGitHub(slug); }
+      catch (err) { alert("As tags ficaram salvas so neste navegador — nao sincronizaram com o GitHub:\n" + err.message); }
+    }
+  }
+
   content.querySelectorAll('[data-action="rename-tag"]').forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       const old = btn.dataset.tag;
       const name = prompt("Novo nome da tag:", old);
       if (!name || !name.trim() || name === old) return;
-      const tags = getEffectiveTags(card).map((t) => (t === old ? name.trim() : t));
-      setCardTags(slug, tags);
-      render();
+      applyTagChange(getEffectiveTags(card).map((t) => (t === old ? name.trim() : t)));
     });
   });
   content.querySelectorAll('[data-action="remove-tag"]').forEach((btn) => {
@@ -713,22 +887,16 @@ function wireCardDetailEvents(slug, card, effectiveCard) {
       e.stopPropagation();
       const tag = btn.dataset.tag;
       if (!confirm(`Remover a tag "${tag}" deste card?`)) return;
-      const tags = getEffectiveTags(card).filter((t) => t !== tag);
-      setCardTags(slug, tags);
-      render();
+      applyTagChange(getEffectiveTags(card).filter((t) => t !== tag));
     });
   });
   const addTagBtn = content.querySelector("#addTagBtn");
   if (addTagBtn) {
     addTagBtn.addEventListener("click", () => {
       const known = allKnownTags();
-      const choice = prompt(
-        "Nome da tag para adicionar (existentes: " + known.join(", ") + "):"
-      );
+      const choice = prompt("Nome da tag para adicionar (existentes: " + known.join(", ") + "):");
       if (!choice || !choice.trim()) return;
-      const tags = [...new Set([...getEffectiveTags(card), choice.trim()])];
-      setCardTags(slug, tags);
-      render();
+      applyTagChange([...new Set([...getEffectiveTags(card), choice.trim()])]);
     });
   }
 }
@@ -1092,13 +1260,59 @@ function openAddModal(prefill = {}) {
 
   document.getElementById("backdrop").addEventListener("click", (e) => { if (e.target.id === "backdrop") root.innerHTML = ""; });
   document.getElementById("mCancel").addEventListener("click", () => (root.innerHTML = ""));
-  document.getElementById("mSave").addEventListener("click", () => {
-    alert(
-      "Nesta versao local (Sessao 1), o Salvar ainda nao grava no repositorio — " +
-      "isso entra na Sessao 2, quando ligarmos o GitHub."
-    );
-    root.innerHTML = "";
+  document.getElementById("mSave").addEventListener("click", async () => {
+    const saveBtn = document.getElementById("mSave");
+    const url = document.getElementById("mUrl").value.trim();
+    const title = document.getElementById("mTitle").value.trim() || "(sem título)";
+    const tag = document.getElementById("mTag").value;
+    const note = document.getElementById("mNote").value.trim();
+
+    saveBtn.textContent = "Salvando…";
+    saveBtn.disabled = true;
+    try {
+      const slug = await createCard({ url, title, tag, note });
+      root.innerHTML = "";
+      navigate({ view: "card", slug });
+    } catch (err) {
+      alert("Nao consegui salvar: " + err.message);
+      saveBtn.textContent = "Salvar";
+      saveBtn.disabled = false;
+    }
   });
+}
+
+// Cria um card novo (do botao +Add, do bookmarklet ou do Compartilhar do
+// Android) e grava de verdade no GitHub, se houver token configurado.
+async function createCard({ url, title, tag, note }) {
+  let source = "";
+  if (url) { try { source = new URL(url).hostname.replace(/^www\./, ""); } catch (e) {} }
+
+  const now = new Date().toISOString();
+  const datePart = now.slice(0, 10);
+  const slugTitle = title.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+  let slug = `${datePart}-${slugTitle || "card"}`;
+  const existingSlugs = new Set(state.index.map((c) => c.slug));
+  let n = 2;
+  while (existingSlugs.has(slug)) { slug = `${datePart}-${slugTitle || "card"}-${n++}`; }
+
+  const card = {
+    slug, title, url, source,
+    tags: [tag],
+    thumbnail: "",
+    attachments: [],
+    created: now, updated: now,
+    status: "pendente",
+    links_to: [], linked_from: [], bracket_terms: [],
+  };
+
+  state.index.unshift(card);
+  state.bodyCache[slug] = { summaryMd: note, notesMd: "" };
+
+  if (getGhToken()) {
+    await saveCardToGitHub(slug, note);
+  }
+  return slug;
 }
 
 // ---------------------------------------------------------------------
@@ -1127,7 +1341,63 @@ function routeFromHash() {
 // Boot
 // ---------------------------------------------------------------------
 
+function showGithubGate() {
+  return new Promise((resolve) => {
+    const root = document.getElementById("modalRoot");
+    root.innerHTML = `
+      <div class="modal-backdrop" id="ghBackdrop">
+        <div class="modal">
+          <h3>🔗 Conectar ao GitHub</h3>
+          <p class="hint" style="margin:0 0 12px;">
+            Cole aqui o token que voce gerou em
+            github.com/settings/personal-access-tokens — ele fica guardado
+            so neste navegador/aparelho, nunca e enviado pra mim nem pro
+            codigo do app.
+          </p>
+          <input id="ghTokenInput" placeholder="github_pat_..." autocomplete="off" />
+          <div class="modal-actions">
+            <button class="btn-ghost" id="ghSkip">Usar sem GitHub (modo teste local)</button>
+            <button class="btn-add" id="ghConnect">Conectar</button>
+          </div>
+        </div>
+      </div>`;
+
+    document.getElementById("ghSkip").addEventListener("click", () => {
+      localStorage.setItem("aacm-gh-skip", "1");
+      root.innerHTML = "";
+      resolve();
+    });
+    document.getElementById("ghConnect").addEventListener("click", () => {
+      const v = document.getElementById("ghTokenInput").value.trim();
+      if (!v) return;
+      setGhToken(v);
+      localStorage.removeItem("aacm-gh-skip");
+      root.innerHTML = "";
+      resolve();
+    });
+  });
+}
+
+function wireGithubStatus() {
+  const el = document.getElementById("githubStatus");
+  if (!el) return;
+  const connected = !!getGhToken();
+  el.textContent = connected ? "☁️ GitHub conectado" : "🔌 Conectar ao GitHub";
+  el.onclick = async () => {
+    if (connected) {
+      if (!confirm("Desconectar este aparelho do GitHub? (o token sera apagado daqui)")) return;
+      clearGhToken();
+    } else {
+      await showGithubGate();
+    }
+    location.reload();
+  };
+}
+
 async function main() {
+  const skipped = localStorage.getItem("aacm-gh-skip") === "1";
+  if (!getGhToken() && !skipped) await showGithubGate();
+
   state.index = await loadIndex();
   state.route = routeFromHash();
   render();
@@ -1143,6 +1413,7 @@ async function main() {
   document.getElementById("brandHome").addEventListener("click", (e) => { e.preventDefault(); navigate({ view: "home" }); });
   document.getElementById("filterBtn").addEventListener("click", (e) => toggleFilterDropdown(e.currentTarget));
   document.getElementById("sortBtn").addEventListener("click", (e) => toggleSortDropdown(e.currentTarget));
+  wireGithubStatus();
 
   const qp = new URLSearchParams(location.search);
   if (qp.get("prefill") === "1") {

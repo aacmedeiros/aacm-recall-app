@@ -35,7 +35,22 @@ html, body {
   border-right: 1px solid var(--border);
   padding: 16px 10px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
+.sidebar-footer { margin-top: auto; padding-top: 14px; }
+.github-status {
+  width: 100%;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.github-status:hover { color: var(--text-dim); border-color: #3a3a3a; }
 
 .brand {
   display: flex;
