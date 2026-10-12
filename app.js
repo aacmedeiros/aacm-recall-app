@@ -167,9 +167,17 @@ function getGhToken() { return localStorage.getItem("aacm-gh-token") || ""; }
 function setGhToken(t) { localStorage.setItem("aacm-gh-token", t.trim()); }
 function clearGhToken() { localStorage.removeItem("aacm-gh-token"); }
 
-// base64 seguro pra UTF-8 (acentos, emoji nas tags, etc.)
+// base64 seguro pra UTF-8 (acentos, emoji nas tags, etc.). Converte em
+// pedacos de 32KB — passar um array grande demais pra String.fromCharCode
+// de uma vez (ex.: o index.json inteiro, ~190KB) estoura a pilha do JS.
 function utf8ToBase64(str) {
-  return btoa(String.fromCharCode(...new TextEncoder().encode(str)));
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 function base64ToUtf8(b64) {
   return new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
