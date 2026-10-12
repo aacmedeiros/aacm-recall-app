@@ -187,6 +187,11 @@ async function ghRequest(path, options = {}) {
   const token = getGhToken();
   const res = await fetch(`https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${path}`, {
     ...options,
+    // "no-store": sem isso o navegador pode responder a leitura do sha
+    // com uma resposta em cache (a API do GitHub permite cache por um
+    // tempo), e ai o "busca fresco antes de gravar" nao adianta nada —
+    // continua achando que o sha antigo e o atual, mesmo repetindo.
+    cache: "no-store",
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
