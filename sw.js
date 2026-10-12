@@ -1,6 +1,6 @@
 // Service worker minimo: so o necessario para o Chrome oferecer
 // "Instalar aplicativo" e o app funcionar offline para o que ja foi visto.
-const CACHE = "aacm-recall-v2";
+const CACHE = "aacm-recall-v3";
 const CORE_ASSETS = [
   "./index.html",
   "./style.css",
@@ -43,18 +43,16 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // App shell (html/css/js): cache primeiro, bom pra abrir rapido/offline.
+  // App shell (html/css/js): busca na rede primeiro, pra nunca rodar uma
+  // versao desatualizada do codigo depois de eu publicar uma correcao —
+  // so cai pro cache se estiver offline.
   event.respondWith(
-    caches.match(event.request).then(
-      (cached) =>
-        cached ||
-        fetch(event.request)
-          .then((res) => {
-            const copy = res.clone();
-            caches.open(CACHE).then((cache) => cache.put(event.request, copy));
-            return res;
-          })
-          .catch(() => cached)
-    )
+    fetch(event.request)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+        return res;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
