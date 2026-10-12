@@ -847,13 +847,28 @@ function wireCardDetailEvents(slug, card, effectiveCard) {
   function wrapSelection(before, after) {
     const start = textarea.selectionStart, end = textarea.selectionEnd;
     const val = textarea.value;
-    const scrollPos = textarea.scrollTop; // reatribuir .value reseta o scroll do campo
+    const scrollPos = textarea.scrollTop;
     const selected = val.slice(start, end) || "texto";
-    textarea.value = val.slice(0, start) + before + selected + after + val.slice(end);
+    const inserted = before + selected + after;
+
     textarea.focus();
-    textarea.selectionStart = start + before.length;
-    textarea.selectionEnd = start + before.length + selected.length;
-    textarea.scrollTop = scrollPos;
+    textarea.setSelectionRange(start, end);
+    // execCommand faz uma edicao "nativa" (mantem undo e nao reseta o
+    // scroll do campo, ao contrario de reatribuir .value inteiro).
+    const usedExecCommand =
+      document.execCommand && document.execCommand("insertText", false, inserted);
+    if (!usedExecCommand) {
+      textarea.value = val.slice(0, start) + inserted + val.slice(end);
+      const newStart = start + before.length;
+      textarea.selectionStart = newStart;
+      textarea.selectionEnd = newStart + selected.length;
+    } else {
+      const newStart = start + before.length;
+      textarea.setSelectionRange(newStart, newStart + selected.length);
+    }
+    // Restaura o scroll depois que o navegador tentar "seguir" a selecao
+    // (esse ajuste acontece depois do fluxo sincrono, por isso o rAF).
+    requestAnimationFrame(() => { textarea.scrollTop = scrollPos; });
   }
   content.querySelector("#boldBtn").addEventListener("click", () => wrapSelection("**", "**"));
   content.querySelector("#highlightBtn").addEventListener("click", () => wrapSelection("==", "=="));
