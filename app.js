@@ -1394,14 +1394,37 @@ function openAddModal(prefill = {}) {
   document.getElementById("mSave").addEventListener("click", async () => {
     const saveBtn = document.getElementById("mSave");
     const url = document.getElementById("mUrl").value.trim();
-    const title = document.getElementById("mTitle").value.trim() || "(sem título)";
+    let title = document.getElementById("mTitle").value.trim();
     const tag = document.getElementById("mTag").value;
-    const note = document.getElementById("mNote").value.trim();
+    let note = document.getElementById("mNote").value.trim();
+    let thumbnail = "";
 
-    saveBtn.textContent = "Salvando…";
     saveBtn.disabled = true;
     try {
-      const slug = await createCard({ url, title, tag, note });
+      // So colou a URL, sem titulo/nota proprios: pede pro Gemini buscar
+      // titulo + resumo + imagem automaticamente, como o Recall fazia.
+      if (url && !note) {
+        if (getGeminiKey()) {
+          saveBtn.textContent = "Buscando resumo (IA)…";
+          try {
+            const meta = await fetchUrlMetadataViaGemini(url);
+            if (meta) {
+              if (!title && meta.title) title = meta.title;
+              if (meta.summary) note = meta.summary;
+              if (meta.image) thumbnail = meta.image;
+            }
+          } catch (err) {
+            console.warn("Resumo automatico via Gemini falhou:", err);
+            note = note || `_Nao consegui buscar um resumo automatico (${err.message}). Edite manualmente._`;
+          }
+        } else {
+          note = "_Sem resumo automatico: conecte sua chave gratuita do Gemini na aba Ask de qualquer card para isso funcionar._";
+        }
+      }
+      if (!title) title = "(sem título)";
+
+      saveBtn.textContent = "Salvando…";
+      const slug = await createCard({ url, title, tag, note, thumbnail });
       root.innerHTML = "";
       navigate({ view: "card", slug });
     } catch (err) {
@@ -1414,7 +1437,7 @@ function openAddModal(prefill = {}) {
 
 // Cria um card novo (do botao +Add, do bookmarklet ou do Compartilhar do
 // Android) e grava de verdade no GitHub, se houver token configurado.
-async function createCard({ url, title, tag, note }) {
+async function createCard({ url, title, tag, note, thumbnail }) {
   let source = "";
   if (url) { try { source = new URL(url).hostname.replace(/^www\./, ""); } catch (e) {} }
 
@@ -1430,7 +1453,7 @@ async function createCard({ url, title, tag, note }) {
   const card = {
     slug, title, url, source,
     tags: [tag],
-    thumbnail: "",
+    thumbnail: thumbnail || "",
     attachments: [],
     created: now, updated: now,
     status: "pendente",
@@ -1444,6 +1467,52 @@ async function createCard({ url, title, tag, note }) {
     await saveCardToGitHub(slug, note);
   }
   return slug;
+}
+
+// Pede pro Gemini visitar a URL (via url_context, que roda do lado do
+// Google — sem o bloqueio de CORS que a gente teria tentando buscar a
+// pagina direto do navegador) e devolver titulo + resumo em topicos +
+// imagem de capa, igual o Recall original fazia. So funciona se o
+// usuario ja colou a chave gratuita do Gemini em algum card (Ask).
+async function fetchUrlMetadataViaGemini(url) {
+  const key = getGeminiKey();
+  if (!key) return null;
+
+  const prompt =
+    `Acesse esta URL: ${url}\n\n` +
+    `Responda APENAS com um JSON (sem markdown, sem crase) no formato:\n` +
+    `{"title": "titulo da pagina, curto", "summary": "resumo em portugues, em topicos markdown ` +
+    `(use '## ' para secoes se fizer sentido e '- ' para cada topico), cobrindo os pontos principais ` +
+    `do conteudo", "image": "URL da imagem de capa/og:image da pagina, ou string vazia se nao achar"}`;
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`;
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      tools: [{ url_context: {} }],
+    }),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`HTTP ${res.status} — ${errText.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  let text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  text = text.trim().replace(/^```(json)?/i, "").replace(/```$/, "").trim();
+  try {
+    const parsed = JSON.parse(text);
+    return {
+      title: (parsed.title || "").trim(),
+      summary: (parsed.summary || "").trim(),
+      image: (parsed.image || "").trim(),
+    };
+  } catch (e) {
+    // o modelo pode responder em texto livre mesmo pedindo JSON; nesse
+    // caso usa a resposta inteira como resumo em vez de travar o salvamento.
+    return { title: "", summary: text, image: "" };
+  }
 }
 
 // ---------------------------------------------------------------------
