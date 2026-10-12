@@ -858,12 +858,14 @@ function wireCardDetailEvents(slug, card, effectiveCard) {
   content.querySelector("#wikilinkBtn").addEventListener("click", () => wrapSelection("[[", "]]"));
 
   // Salvamento automatico: grava (local, por enquanto) 600ms depois que
-  // voce para de digitar — sem precisar de um botao "Salvar".
+  // voce para de digitar — sem precisar de um botao "Salvar". O aviso
+  // "Salvando..." so atualiza nesse timer tambem (nao a cada letra), pra
+  // nao ficar mudando o texto da tela toda hora e empurrando o scroll.
   let autosaveTimer = null;
   textarea.addEventListener("input", () => {
-    savedHint.textContent = "Salvando…";
     clearTimeout(autosaveTimer);
     autosaveTimer = setTimeout(() => {
+      savedHint.textContent = "Salvando…";
       setCardContent(slug, textarea.value);
       savedHint.textContent = "✅ Salvo automaticamente neste navegador";
       setTimeout(() => (savedHint.textContent = ""), 2500);

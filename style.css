@@ -415,8 +415,19 @@ a.wikilink { cursor: pointer; }
 .wikilink-pop-list li:hover { color: var(--link); text-decoration: underline; }
 .wikilink-pop-more { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; }
 
-.panel-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.saved-hint { color: #7fd17f; font-size: 12.5px; }
+.panel-toolbar { position: relative; display: flex; align-items: center; gap: 12px; margin-bottom: 12px; min-height: 34px; }
+/* Fora do fluxo do layout de proposito: o texto muda sozinho (Salvando...,
+   Sincronizado...) e, se ficasse no fluxo normal, cada mudanca empurraria
+   o conteudo abaixo e o navegador "pulava" o scroll pra acompanhar. */
+.saved-hint {
+  position: absolute;
+  left: 110px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #7fd17f;
+  font-size: 12.5px;
+  max-width: calc(100% - 110px);
+}
 
 .edit-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .edit-toolbar .spacer { flex: 1; }
