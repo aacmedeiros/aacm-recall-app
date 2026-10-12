@@ -493,6 +493,13 @@ a.wikilink { cursor: pointer; }
 .chat-msg-user { align-self: flex-end; background: var(--accent); color: var(--accent-text); }
 .chat-msg-assistant { align-self: flex-start; background: var(--bg-card); border: 1px solid var(--border); color: var(--text); }
 
+.ask-add-notebook {
+  display: block; margin-top: 8px; background: none; border: 1px solid var(--border);
+  color: var(--text-dim); padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;
+}
+.ask-add-notebook:hover { color: var(--text); border-color: #3a3a3a; }
+.ask-add-notebook:disabled { opacity: 0.7; cursor: default; }
+
 .ask-input-row { display: flex; gap: 8px; }
 .ask-input-row input {
   flex: 1; background: var(--bg-card); border: 1px solid var(--border); color: var(--text);

@@ -1017,6 +1017,39 @@ function initAskPanel(slug, card) {
     div.textContent = text;
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div;
+  }
+
+  // Acrescenta a pergunta+resposta no final do conteudo do card (Notebook)
+  // e sincroniza com o GitHub, igual uma edicao manual faria.
+  async function addAnswerToNotebook(question, answer, btn) {
+    btn.disabled = true;
+    btn.textContent = "Adicionando…";
+    try {
+      const body = await loadCardBody(slug);
+      const current = getEffectiveContent(card, body);
+      const block = `**Pergunta (Ask):** ${question}\n\n${answer}`;
+      const newContent = (current.trim() ? current.trim() + "\n\n---\n\n" : "") + block;
+      setCardContent(slug, newContent);
+
+      // Atualiza a aba Notebook (que esta escondida, nao recarregada) pra
+      // nao ficar desatualizada se o usuario trocar de aba depois.
+      const titleToSlug = new Map(state.index.map((c) => [c.title.toLowerCase(), c.slug]));
+      const prose = document.getElementById("prose");
+      const textarea = document.getElementById("contentArea");
+      if (prose) prose.innerHTML = renderMarkdown(newContent, titleToSlug);
+      if (textarea) textarea.value = newContent;
+
+      if (getGhToken()) {
+        btn.textContent = "☁️ Sincronizando…";
+        await syncCardToGitHub(slug);
+      }
+      btn.textContent = "✅ Adicionado ao Notebook";
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "+ Adicionar no Notebook";
+      alert("Nao consegui adicionar ao Notebook: " + err.message);
+    }
   }
 
   async function send() {
@@ -1040,7 +1073,13 @@ function initAskPanel(slug, card) {
       }
       const answer = await askGemini(context, question, history);
       thinking.remove();
-      addBubble("assistant", answer);
+      const bubble = addBubble("assistant", answer);
+      const addBtn = document.createElement("button");
+      addBtn.className = "btn-ghost ask-add-notebook";
+      addBtn.textContent = "+ Adicionar no Notebook";
+      addBtn.addEventListener("click", () => addAnswerToNotebook(question, answer, addBtn));
+      bubble.appendChild(addBtn);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
       history.push({ q: question, a: answer });
     } catch (err) {
       thinking.remove();
