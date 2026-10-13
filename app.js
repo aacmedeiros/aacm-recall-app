@@ -1543,6 +1543,7 @@ function openAddModal(prefill = {}) {
             if (meta) {
               if (!title && meta.title) title = meta.title;
               if (meta.summary) note = meta.summary;
+              else if (meta.summaryError) note = `_Titulo e imagem foram buscados, mas o resumo por IA falhou: ${meta.summaryError}_`;
               if (meta.image) thumbnail = meta.image;
             }
           } catch (err) {
@@ -1609,9 +1610,75 @@ async function createCard({ url, title, tag, note, thumbnail }) {
 // pagina direto do navegador) e devolver titulo + resumo em topicos +
 // imagem de capa, igual o Recall original fazia. So funciona se o
 // usuario ja colou a chave gratuita do Gemini em algum card (Ask).
+function youtubeVideoId(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\.|^m\./, "");
+    if (host === "youtu.be") return u.pathname.slice(1).split("/")[0] || null;
+    if (host === "youtube.com") {
+      if (u.pathname === "/watch") return u.searchParams.get("v");
+      const m = u.pathname.match(/^\/(?:shorts|embed|live)\/([\w-]{6,})/);
+      if (m) return m[1];
+    }
+  } catch (e) {}
+  return null;
+}
+
+// YouTube bloqueia leitura de pagina sem login, entao url_context nao
+// funciona. Aqui: titulo + miniatura vem do oEmbed publico do YouTube
+// (aceita CORS) e o resumo vem do Gemini "assistindo" o video via link
+// (fileData), que e o jeito suportado de passar video do YouTube.
+async function fetchYoutubeMetadata(videoId) {
+  const key = getGeminiKey();
+  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const result = { title: "", summary: "", image: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, summaryError: "" };
+
+  try {
+    const r = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(watchUrl)}&format=json`);
+    if (r.ok) {
+      const j = await r.json();
+      result.title = (j.title || "").trim();
+      if (j.thumbnail_url) result.image = j.thumbnail_url;
+    }
+  } catch (e) { /* segue so com o que ja temos */ }
+
+  try {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(key)}`;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { fileData: { fileUri: watchUrl } },
+            { text:
+              "Resuma este video em portugues, em topicos markdown: use '## ' para secoes e '- ' para cada " +
+              "topico, cobrindo os pontos principais. Responda somente com o resumo, sem introducao nem comentarios." },
+          ],
+        }],
+        generationConfig: { maxOutputTokens: 4096 },
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`HTTP ${res.status} — ${errText.slice(0, 300)}`);
+    }
+    const data = await res.json();
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    result.summary = parts.map((p) => p.text || "").join("").trim();
+    if (!result.summary) throw new Error("O Gemini nao devolveu texto (video privado, muito longo ou sem permissao).");
+  } catch (e) {
+    result.summaryError = e.message;
+  }
+  return result;
+}
+
 async function fetchUrlMetadataViaGemini(url) {
   const key = getGeminiKey();
   if (!key) return null;
+
+  const videoId = youtubeVideoId(url);
+  if (videoId) return fetchYoutubeMetadata(videoId);
 
   const prompt =
     `Acesse esta URL: ${url}\n\n` +
