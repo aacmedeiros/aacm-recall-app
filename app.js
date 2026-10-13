@@ -1576,7 +1576,8 @@ async function fetchUrlMetadataViaGemini(url) {
 
   const prompt =
     `Acesse esta URL: ${url}\n\n` +
-    `Responda APENAS com um JSON (sem markdown, sem crase) no formato:\n` +
+    `Sua resposta final deve ser SOMENTE o JSON abaixo — nao escreva raciocinio, ` +
+    `explicacoes, nem nenhum texto antes ou depois dele:\n` +
     `{"title": "titulo da pagina, curto", "summary": "resumo em portugues, em topicos markdown ` +
     `(use '## ' para secoes se fizer sentido e '- ' para cada topico), cobrindo os pontos principais ` +
     `do conteudo", "image": "URL da imagem de capa/og:image da pagina, ou string vazia se nao achar"}`;
@@ -1595,20 +1596,39 @@ async function fetchUrlMetadataViaGemini(url) {
     throw new Error(`HTTP ${res.status} — ${errText.slice(0, 200)}`);
   }
   const data = await res.json();
-  let text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  text = text.trim().replace(/^```(json)?/i, "").replace(/```$/, "").trim();
-  try {
-    const parsed = JSON.parse(text);
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const parsed = extractJsonObject(text);
+  if (parsed) {
     return {
       title: (parsed.title || "").trim(),
       summary: (parsed.summary || "").trim(),
       image: (parsed.image || "").trim(),
     };
-  } catch (e) {
-    // o modelo pode responder em texto livre mesmo pedindo JSON; nesse
-    // caso usa a resposta inteira como resumo em vez de travar o salvamento.
-    return { title: "", summary: text, image: "" };
   }
+  // O modelo as vezes "pensa alto" antes do JSON (narra como se estivesse
+  // usando uma ferramenta de busca) mesmo pedindo pra responder so o JSON.
+  // Sem um JSON reconhecivel na resposta, usa o texto cru como resumo em
+  // vez de travar o salvamento do card.
+  return { title: "", summary: text.trim(), image: "" };
+}
+
+// Acha e faz parse de um objeto JSON dentro de um texto maior: tenta o
+// texto inteiro primeiro, depois um bloco ```json ... ```, depois o
+// trecho entre a primeira "{" e a ultima "}" do texto.
+function extractJsonObject(text) {
+  const candidates = [text.trim()];
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) candidates.push(fenced[1].trim());
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first !== -1 && last > first) candidates.push(text.slice(first, last + 1));
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch (e) { /* tenta o proximo */ }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------
