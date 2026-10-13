@@ -1628,6 +1628,15 @@ async function fetchUrlMetadataViaGemini(url) {
     body: JSON.stringify({
       contents: [{ parts: [{ text: prompt }] }],
       tools: [{ url_context: {} }],
+      // Em paginas que bloqueiam acesso (ex.: YouTube sem login), o
+      // modelo tenta "pensar alto" formas de contornar isso, e essa
+      // narrativa as vezes consome todo o limite de tokens antes de
+      // chegar no JSON final (resposta cortada no meio). Desligando o
+      // "pensamento" ele vai direto pra resposta, mesmo que mais simples.
+      generationConfig: {
+        thinkingConfig: { thinkingBudget: 0 },
+        maxOutputTokens: 4096,
+      },
     }),
   });
   if (!res.ok) {
@@ -1644,11 +1653,10 @@ async function fetchUrlMetadataViaGemini(url) {
       image: (parsed.image || "").trim(),
     };
   }
-  // O modelo as vezes "pensa alto" antes do JSON (narra como se estivesse
-  // usando uma ferramenta de busca) mesmo pedindo pra responder so o JSON.
-  // Sem um JSON reconhecivel na resposta, usa o texto cru como resumo em
-  // vez de travar o salvamento do card.
-  return { title: "", summary: text.trim(), image: "" };
+  // Sem JSON reconhecivel na resposta (ex.: pagina bloqueou o acesso e o
+  // modelo nao conseguiu concluir) — melhor avisar no formulario do que
+  // salvar um texto de raciocinio solto como se fosse o resumo do card.
+  throw new Error("O Gemini nao devolveu um resumo valido para essa pagina (pode ser uma pagina que bloqueia acesso, como o YouTube as vezes faz).");
 }
 
 // Acha e faz parse de um objeto JSON dentro de um texto maior: tenta o
