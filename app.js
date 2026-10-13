@@ -736,7 +736,10 @@ async function renderCardDetail(slug) {
     <div class="detail">
       <button class="icon-btn detail-home" data-nav="home" title="Voltar para a Home">${ICONS.home}</button>
       ${thumbHtml}
-      <h1 class="detail-title">${escapeHtml(card.title)}</h1>
+      <div class="detail-title-row">
+        <h1 class="detail-title" id="detailTitle">${escapeHtml(card.title)}</h1>
+        <button class="icon-btn" id="editTitleBtn" title="Editar titulo">${ICONS.pencil}</button>
+      </div>
       <div class="detail-meta">
         ${card.url ? `<a href="${card.url}" target="_blank" rel="noopener">🔗 ${card.source || card.url}</a>` : ""}
         ${tagChipsHtml(effectiveCard)}
@@ -885,6 +888,42 @@ function wireCardDetailEvents(slug, card, effectiveCard) {
       deleteCardBtn.disabled = false;
       deleteCardBtn.innerHTML = `${ICONS.trash} Excluir`;
     }
+  });
+
+  // ---- editar titulo ----
+  async function applyTitleChange(newTitle) {
+    card.title = newTitle;
+    render();
+    if (getGhToken()) {
+      try { await syncCardToGitHub(slug); }
+      catch (err) { alert("O titulo ficou salvo so neste navegador — nao sincronizou com o GitHub:\n" + err.message); }
+    }
+  }
+
+  const detailTitle = content.querySelector("#detailTitle");
+  const editTitleBtn = content.querySelector("#editTitleBtn");
+  editTitleBtn.addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.className = "detail-title-input";
+    input.value = card.title;
+    detailTitle.replaceWith(input);
+    editTitleBtn.style.display = "none";
+    input.focus();
+    input.select();
+
+    let done = false;
+    function commit() {
+      if (done) return;
+      done = true;
+      const val = input.value.trim();
+      if (!val || val === card.title) { render(); return; }
+      applyTitleChange(val);
+    }
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+      if (e.key === "Escape") { done = true; render(); }
+    });
+    input.addEventListener("blur", commit);
   });
 
   // ---- editar conteudo ----
