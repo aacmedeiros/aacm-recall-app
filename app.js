@@ -349,6 +349,9 @@ async function saveCardToGitHub(slug, content) {
   card.updated = new Date().toISOString();
   card.bracket_terms = extractBracketTerms(content);
   state.termIndexCache = null;
+  // Se o card estava "pendente" e agora ganhou conteudo de verdade,
+  // tira o selo de pendente (edicao manual conta como "resumido").
+  if (card.status === "pendente" && content.trim()) card.status = "resumido";
 
   const fm = [
     "---",
@@ -1546,7 +1549,10 @@ async function createCard({ url, title, tag, note, thumbnail }) {
     thumbnail: thumbnail || "",
     attachments: [],
     created: now, updated: now,
-    status: "pendente",
+    // "pendente" so quando o card nasce sem nenhum conteudo (nem nota
+    // manual, nem resumo automatico da IA) — pra sinalizar que ainda
+    // precisa de atencao. Se ja tem conteudo, considera "resumido".
+    status: note.trim() ? "resumido" : "pendente",
     links_to: [], linked_from: [], bracket_terms: [],
   };
 
